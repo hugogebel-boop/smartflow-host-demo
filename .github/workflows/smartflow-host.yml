@@ -1,0 +1,42 @@
+# Déploiement sur SmartFlow Host, ajouté par l'app GitHub.
+# Chaque push construit le site ici, dans GitHub Actions, puis envoie le résultat.
+# La branche main part en production, les autres en preview.
+name: SmartFlow Host
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smartflow-host-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Propriétaire de la clé, tel que le renvoie /v2/user : la CLI refuse un autre identifiant.
+  VERCEL_ORG_ID: k174pj5517aqdgngr04xs8ha5s8g3nbs
+  VERCEL_PROJECT_ID: k5755c42kdkh56m9jeye9y9zxx8g2kh7
+  SMARTFLOW_HOST_API: https://api.host.smartflowsa.ch
+  # Lu par la CLI Vercel : la clé n'apparaît jamais dans la ligne de commande.
+  VERCEL_TOKEN: ${{ secrets.SMARTFLOW_HOST_TOKEN }}
+  TARGET: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: CLI Vercel
+        run: npm install --global vercel@63
+      - name: Réglages et variables
+        run: vercel pull --yes --environment="$TARGET" --api "$SMARTFLOW_HOST_API"
+      - name: Build
+        run: vercel build --yes $([ "$TARGET" = production ] && echo --prod) --api "$SMARTFLOW_HOST_API"
+      - name: Déploiement
+        run: vercel deploy --prebuilt $([ "$TARGET" = production ] && echo --prod) --api "$SMARTFLOW_HOST_API"
