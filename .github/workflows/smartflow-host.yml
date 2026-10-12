@@ -39,14 +39,56 @@ jobs:
         # Lancé depuis la console : la CLI lit la branche dans git, pas dans l'événement.
         if: github.event_name == 'repository_dispatch'
         run: git checkout -B "$BRANCH"
+      - name: Début du build
+        # Le déploiement apparaît tout de suite dans SmartFlow Host. Sans réponse de l'API, le build continue sans suivi en direct.
+        run: |
+          jq -n --arg project "$VERCEL_PROJECT_ID" --arg target "$TARGET" --arg branch "$BRANCH" \
+            --arg sha "$(git rev-parse HEAD)" --arg message "$(git log -1 --pretty=%B)" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{project: $project, target: $target, branch: $branch, commitSha: $sha, commitMessage: $message, runUrl: $run}' > "$RUNNER_TEMP/start.json"
+          ID=$(curl -fsS -m 15 -X POST "$SMARTFLOW_HOST_API/smartflow/v1/builds" -H "authorization: Bearer $VERCEL_TOKEN" \
+            -H "content-type: application/json" --data @"$RUNNER_TEMP/start.json" | jq -r '.id // empty') || true
+          echo "SMARTFLOW_BUILD=$ID" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/stream.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          # Lance la commande, garde sa sortie dans GitHub et l'envoie à SmartFlow Host toutes les 2 s.
+          set -o pipefail
+          log="$RUNNER_TEMP/build.log"; touch "$log"; [ -s "$log.sent" ] || echo 0 > "$log.sent"
+          push() {
+            [ -n "$SMARTFLOW_BUILD" ] || return 0
+            total=$(wc -l < "$log"); sent=$(cat "$log.sent")
+            [ "$total" -gt "$sent" ] || return 0
+            count=$((total - sent)); [ "$count" -gt 1000 ] && count=1000
+            tail -n +$((sent + 1)) "$log" | head -n "$count" | jq -R -s '{lines: (split("\n") | map(select(length > 0)))}' \
+              | curl -fs -m 10 -X POST "$SMARTFLOW_HOST_API/smartflow/v1/builds/$SMARTFLOW_BUILD/logs" \
+                -H "authorization: Bearer $VERCEL_TOKEN" -H "content-type: application/json" --data @- > /dev/null \
+              && echo $((sent + count)) > "$log.sent"
+          }
+          echo "$ $*" >> "$log"
+          ( while sleep 2; do push; done ) & loop=$!
+          "$@" 2>&1 | tee -a "$log"; status=$?
+          kill "$loop" 2>/dev/null; wait "$loop" 2>/dev/null
+          for _ in 1 2 3 4 5; do push; [ "$(wc -l < "$log")" -le "$(cat "$log.sent")" ] && break; sleep 1; done
+          exit "$status"
+          SCRIPT
+          chmod +x "$RUNNER_TEMP/stream.sh"
       - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: CLI Vercel
-        run: npm install --global vercel@63
+        run: '"$RUNNER_TEMP/stream.sh" npm install --global vercel@63'
       - name: Réglages et variables
-        run: vercel pull --yes --environment="$TARGET" --api "$SMARTFLOW_HOST_API"
+        run: '"$RUNNER_TEMP/stream.sh" vercel pull --yes --environment="$TARGET" --api "$SMARTFLOW_HOST_API"'
       - name: Build
-        run: vercel build --yes $([ "$TARGET" = production ] && echo --prod) --api "$SMARTFLOW_HOST_API"
+        run: '"$RUNNER_TEMP/stream.sh" vercel build --yes $([ "$TARGET" = production ] && echo --prod) --api "$SMARTFLOW_HOST_API"'
       - name: Déploiement
-        run: vercel deploy --prebuilt $([ "$TARGET" = production ] && echo --prod) --api "$SMARTFLOW_HOST_API"
+        # Les fichiers rejoignent le déploiement ouvert au début : la publication suit dans la console.
+        run: vercel deploy --prebuilt $([ "$TARGET" = production ] && echo --prod) --meta smartflowBuild="$SMARTFLOW_BUILD" --api "$SMARTFLOW_HOST_API"
+      - name: Échec ou annulation
+        if: (failure() || cancelled()) && env.SMARTFLOW_BUILD != ''
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          jq -n --argjson canceled "$([ "$JOB_STATUS" = cancelled ] && echo true || echo false)" '{canceled: $canceled}' \
+            | curl -fsS -m 10 -X POST "$SMARTFLOW_HOST_API/smartflow/v1/builds/$SMARTFLOW_BUILD/fail" \
+              -H "authorization: Bearer $VERCEL_TOKEN" -H "content-type: application/json" --data @- > /dev/null || true
