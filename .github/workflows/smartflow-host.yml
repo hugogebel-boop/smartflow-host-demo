@@ -1,17 +1,20 @@
 # Déploiement sur SmartFlow Host, ajouté par l'app GitHub.
 # Chaque push construit le site ici, dans GitHub Actions, puis envoie le résultat.
 # La branche main part en production, les autres en preview.
+# Le bouton « Déployer » de la console passe par repository_dispatch.
 name: SmartFlow Host
 
 on:
   push:
   workflow_dispatch:
+  repository_dispatch:
+    types: [smartflow-host-deploy]
 
 permissions:
   contents: read
 
 concurrency:
-  group: smartflow-host-${{ github.ref }}
+  group: smartflow-host-${{ github.event.client_payload.branch || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -21,7 +24,8 @@ env:
   SMARTFLOW_HOST_API: https://api.host.smartflowsa.ch
   # Lu par la CLI Vercel : la clé n'apparaît jamais dans la ligne de commande.
   VERCEL_TOKEN: ${{ secrets.SMARTFLOW_HOST_TOKEN }}
-  TARGET: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
+  BRANCH: ${{ github.event.client_payload.branch || github.ref_name }}
+  TARGET: ${{ github.event.client_payload.target || (github.ref_name == 'main' && 'production' || 'preview') }}
 
 jobs:
   deploy:
@@ -29,6 +33,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.client_payload.sha || github.event.client_payload.branch || github.ref }}
+      - name: Branche
+        # Lancé depuis la console : la CLI lit la branche dans git, pas dans l'événement.
+        if: github.event_name == 'repository_dispatch'
+        run: git checkout -B "$BRANCH"
       - uses: actions/setup-node@v7
         with:
           node-version: 24
