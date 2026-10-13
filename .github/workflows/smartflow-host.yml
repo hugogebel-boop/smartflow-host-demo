@@ -21,7 +21,7 @@ env:
   # Propriétaire de la clé, tel que le renvoie /v2/user : la CLI refuse un autre identifiant.
   VERCEL_ORG_ID: k174pj5517aqdgngr04xs8ha5s8g3nbs
   VERCEL_PROJECT_ID: k5755c42kdkh56m9jeye9y9zxx8g2kh7
-  SMARTFLOW_HOST_API: https://api.host.smartflowsa.ch
+  SMARTFLOW_HOST_API: https://api.host.hgdc.ch
   # Lu par la CLI Vercel : la clé n'apparaît jamais dans la ligne de commande.
   VERCEL_TOKEN: ${{ secrets.SMARTFLOW_HOST_TOKEN }}
   BRANCH: ${{ github.event.client_payload.branch || github.ref_name }}
